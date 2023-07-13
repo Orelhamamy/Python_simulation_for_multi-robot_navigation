@@ -1,0 +1,6 @@
+BGMM:
+  n_components: 20
+  weight_concentration_prior: 100_000
+  mean_precision_prior: 0.8
+  max_iter: 100
+  warm_start: True
