@@ -6,7 +6,13 @@ Origin: https://medium.com/@nicholas.w.swift/easy-a-star-pathfinding-7e6689c7f7b
 author: Nicholas Swift
 """
 
-'''class Node():
+from PIL import Image
+import numpy as np
+import cv2
+import pyastar2d
+
+'''
+class Node():
     """A node class for A* Pathfinding"""
 
     def __init__(self, parent=None, position=None):
@@ -174,8 +180,9 @@ def astargpt(cost_map, start, goal):
 
     # No path found
     return []
-
 '''
+
+
 
     
 class Graph():
@@ -335,8 +342,6 @@ class Graph():
                 cv2.imshow('Building the tree', img)
                 cv2.waitKey(1)
             
-            
-            
             parent_inx = unconnected_nearest
             parent_vertex = self.vertices[parent_inx]        
             
@@ -359,27 +364,28 @@ class Graph():
         
 if __name__ == "__main__":
     
-    from PIL import Image
-    import numpy as np
-    import cv2
     
-    maze = (255 - np.asarray(Image.open("/home/orel/orel_ws/thesis/proof of concept/maps/map1.png")))[..., 0]
+    
+    maze = (255 - np.asarray(Image.open("/home/orel/orel_ws/thesis/proof of concept/maps/map1.png")).astype(np.float32))[..., 0]
     
     pos = (100, 100)
     
-    end_pos = (700, 400)
+    end_pos = (500, 550)
     
     # path = astargpt(maze, pos, end_pos)
+    cm = maze + 1
+    cm[cm>50] = np.inf
     
-    G = Graph(maze.shape, pos, star=True)
+    path = pyastar2d.astar_path(cm.T, pos, end_pos, allow_diagonal=True)
+    # G = Graph(maze.shape, pos, star=True)
     
-    for _ in range(2500):
-        G.sample_v(maze / 255., display=False)
+    # for _ in range(2500):
+    #     G.sample_v(maze / 255., display=True)
     
     # G.find_path(maze / 255., (500,350), end_pos, display=True)
     img_maze = np.tile(maze[..., None], 3)
-    # img_maze = cv2.circle(img_maze, pos, radius=5, color=(0,0,255), thickness=-1)
-            
+    img_maze = cv2.circle(img_maze, pos, radius=5, color=(0,0,255), thickness=-1)
+    img_maze = cv2.circle(img_maze, end_pos, radius=5, color=(255,0,0), thickness=-1)        
     
     # for p_i, e_i in zip(G.vertices, G.edges):
     #     img_maze = cv2.circle(img_maze, tuple(p_i), radius=1, color=(255,0,0), thickness=-1)
@@ -394,10 +400,14 @@ if __name__ == "__main__":
     #     path = np.r_[G.vertices[None, next_i], path]
     #     i = next_i
     
-    # for i in range(path.shape[0] - 1):
-    #     img_maze = cv2.line(img_maze, tuple(path[i]), tuple(path[i+1]), (0,0,255) , thickness=2)
-    # cv2.imshow('maze_with_path', img_maze)
-    
+    for i in range(path.shape[0] - 1):
+        img_maze = cv2.line(img_maze, tuple(path[i]), tuple(path[i+1]), (0,0,255) , thickness=2)
+    cv2.imshow('maze_with_path', img_maze)
+    while 1:
+        k = cv2.waitKey(20) & 0xFF
+        if k == 27 or k==ord('q'):
+            cv2.destroyAllWindows()
+            break
     # k = 25
     # M, N = maze.shape
     # pad = ((0, M % k), (0, N % k))

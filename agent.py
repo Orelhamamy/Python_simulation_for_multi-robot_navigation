@@ -1,13 +1,19 @@
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any
 import numpy as np
 import cv2
-from sklearn.mixture import BayesianGaussianMixture, GaussianMixture
+from sklearn.mixture import GaussianMixture
 from scipy.spatial.distance import cdist
-import yaml
-import time, threading
-from Astar import astargpt
+# import yaml
+import time
+import threading
+import pyastar2d
+import multiprocessing as mp
+
+
 class AgentRobot:
-    def __init__(self, range, env_grid, number, init_position=(10, 10), sensor_angle=360, frequency=10, N_rays=360,
-                 range_resolution=0.05, map_res=0.05) -> None:
+    def __init__(self, range, env_grid, number, map_res=0.05, init_position=(10, 10), color=(0, 0, 255), sensor_angle=360, frequency=10, N_rays=360,
+                 range_resolution=0.05) -> None:
         self.range = range
         self.position = np.array(init_position)  # array(x,y)
         self.sensor_angle = np.deg2rad(sensor_angle)
@@ -23,7 +29,11 @@ class AgentRobot:
         self.sigma = 0.01
         self.grid_map = np.ones(env_grid.shape, dtype=np.float32) * -1
         self.number = number
+        
         self.env_grid = env_grid
+        self.is_moving = False
+        self.path = None
+        self.color = color
         # with open("config/params.yaml", 'r') as stream:
         #     self.BGMM_params = yaml.safe_load(stream)["BGMM"]
 
@@ -31,7 +41,21 @@ class AgentRobot:
         # self.BGMM_is_fitted = False
         self.GMM_is_fitted = False
         self.get_ranges_in_grid_frame()
+        cv2.namedWindow(f"robot_map_{self.number}")
+        cv2.setMouseCallback(f"robot_map_{self.number}", self.get_location)
+        print(f"inti robot:{number}")
+        # self.display_map(True)
 
+    def get_location(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDBLCLK:
+        # for agent in agents:
+            if self.is_moving:
+                self.is_moving = False
+                time.sleep(1)
+            self.generate_path(np.array([x, y]), True)
+            
+            
+    
     def display_map(self, with_pos=False):
         img = 1 - self.grid_map.copy()
         img = img * 255
@@ -39,8 +63,12 @@ class AgentRobot:
         img = np.tile(img[..., None], 3)
         # print(np.unique(img))
         x, y = np.floor(self.position / self.map_res).astype(np.uint32)
-        img = cv2.circle(img, (x, y), radius=1, color=(0,0,255), thickness=-1)
-        cv2.imshow(f"robot_map_{self.number}", img.astype(np.uint8))
+        self.robot_map_img = cv2.circle(img, (x, y), radius=3, color=self.color, thickness=-1)
+        if self.path is not None:
+            for i in range(self.path.shape[0] - 1):
+                self.robot_map_img = cv2.line(self.robot_map_img, tuple(self.path[i]), tuple(self.path[i + 1]), self.color, thickness=1)
+        cv2.imshow(f"robot_map_{self.number}", self.robot_map_img.astype(np.uint8))
+        cv2.imshow(f"robot_map_{self.number}", self.robot_map_img.astype(np.uint8))
         cv2.waitKey(1)
 
     def add_uncertainty(self, distance, angle):
@@ -133,7 +161,6 @@ class AgentRobot:
         # Create the final range readings array
         range_readings = np.column_stack((range_readings, np.ones(range_readings.shape[0]) * 0.5))
         range_readings[occ, 2] = 1
-        
 
         return range_readings
 
@@ -196,16 +223,18 @@ class AgentRobot:
             self.init_means = np.array([np.mean(a, axis=0) for a in merged_cnt])        
         
     def define_gmm(self, ):
-        
+        if self.frontiers_points is None:
+            self.GMM_is_fitted = False
+            return None
         self.normalization_factor = [self.frontiers_points.min(axis=0),
                                     self.frontiers_points.max(axis=0) - self.frontiers_points.min(axis=0)]
         
         means = (self.init_means - self.normalization_factor[0]) / self.normalization_factor[1]
         self.gmm = GaussianMixture(means.shape[0], means_init=means, max_iter=100)
         X = (self.frontiers_points - self.normalization_factor[0]) / self.normalization_factor[1]
-        # print("fitting!!")
+        print("fitting!!")
         self.gmm.fit(X)
-        # print("Done")
+        print("Done")
         cov_factor = self.normalization_factor[1][:, None] * self.normalization_factor[1][None, :]
         self.f_means = self.gmm.means_ * self.normalization_factor[1] + self.normalization_factor[0]
         self.f_covs = self.gmm.covariances_ * cov_factor
@@ -225,33 +254,38 @@ class AgentRobot:
             center = tuple(np.round(m).astype(np.int))
             axes = tuple(np.round(scale).astype(np.int))
             ellipsis = cv2.ellipse(ellipsis, center, axes, angle, 0, 360, (255, 102, 102), -1)
-        print(f"scale: {scale} and axes:{axes}")
+        # print(f"scale: {scale} and axes:{axes}")
         return cv2.addWeighted(ellipsis, 0.4, img, 1 - 0.4, 0)
 
-    def drive(self, desire_pos):
-    
-        while np.linalg.norm(desire_pos - self.position) > 0.05:
-            
-            # print((desire_pos - self.position))
-            dx, dy = (desire_pos - self.position) / np.linalg.norm(desire_pos - self.position)
+    def drive(self, desire_pos, grid=False, display=False):
+        
+        if grid:
+            desire_pos = desire_pos * self.map_res
+        
+        while np.linalg.norm(desire_pos - self.position) > 0.05 and self.is_moving:
+            dx, dy = (desire_pos - self.position) / np.linalg.norm((desire_pos - self.position))
             dt = 0.1
             self.position = self.position + dt * np.array((dx, dy))
+            limits = np.r_[self.grid_map.shape[::-1]] * self.map_res  # Get the shape as (x,y)
+            self.position = (self.position > limits) * (limits - self.position) + self.position
+            self.position = (self.position < [0, 0]) * (-self.position) + self.position
             # self.get_ranges_in_grid_frame()
-            self.display_map()
-            
+            if display:
+                self.display_map()
+
     def generate_cost_map(self, display_cost_map=False):
-        
-        self.cost_map = np.zeros(self.env_grid.shape)
+
+        self.cost_map = np.ones(self.env_grid.shape).astype(np.float32)
         # Distance cost
         xx = np.arange(self.env_grid.shape[1])[None, :]
         yy = np.arange(self.env_grid.shape[0])[:, None]
         grid_position = self.position / self.map_res
-        rr = np.sqrt((xx - grid_position[0])**2 + (yy - grid_position[1])**2)
-        
-        rr = rr / np.max(rr)
+        # rr = np.sqrt((xx - grid_position[0])**2 + (yy - grid_position[1])**2)
+
+        # rr = rr / np.max(rr)
 
 
-        # Obstacle cost 
+        # Obstacle cost
 
         walls = self.grid_map > 0.9
         kernel = cv2.getGaussianKernel(50, 30)
@@ -261,40 +295,35 @@ class AgentRobot:
 
         obs = cv2.filter2D(walls.astype(np.uint8), 5, kernel)
         obs = obs / np.max(obs)
-        # obs[walls] = 1
-        self.cost_map = 0.5 * obs + 0.5 * rr
-        self.cost_map[walls > 0] = 1
-        
+        obs[walls] = 1
+        # self.cost_map = 0.5 * obs + 0.5 * rr
+        self.cost_map += obs
+        self.cost_map[self.cost_map < 1] = 1
+        self.cost_map[walls > 0] = np.inf
+
 
         if display_cost_map:
             cv2.imshow(f'cmap_{self.number}', (self.cost_map * 255).astype(np.uint8))
+            cv2.waitKey(1000)
 
-    def generate_path(self, destination):
-       
+    def generate_path(self, destination, drive=True, grid=True):
+        self.is_moving = False
         pos = tuple(np.round(self.position / self.map_res).astype(np.int))
-        end_pos = tuple(destination)
-    
-        # Map Reducing  
-        k = 50 
-        M, N = self.cost_map.shape
-        pad = ((0, M % k), (0, N % k))
-        reduced_map = np.pad(self.cost_map, pad)
-        M, N = reduced_map.shape
-        m, n = M // k, N // k
+        end_pos = tuple(np.round(destination).astype(np.int)) if grid else tuple(np.round(destination / self.map_res).astype(np.int))
+        maze = self.env_grid.astype(np.float32)
+        maze[maze == 1] = np.inf
+        maze = maze + 1
+        self.path = pyastar2d.astar_path(maze.T, pos, end_pos, allow_diagonal=True)
 
-        reduce_pos = (pos[0] // k, pos[1] // k) 
-        reduce_end = (end_pos[0] // k, end_pos[1] // k) 
-        print(f"pos:{pos} \n reduce:{reduce_pos}\n\n end_pos:{end_pos}\n reduce_end:{reduce_end}")
-        reduced_map = reduced_map[:m * k, : n * k].reshape(m, k, n, k).mean(axis=(1,3))
-        reduced_path = astar(reduced_map * 255, reduce_pos, reduce_end)
-        print(reduced_path)
-        path_a = np.array(reduced_path[1]) * k + k // 2
-        if reduced_path[0]:
-            path_a = np.r_[path_a, np.array(end_pos)[None,:]]
-        print(f"path:\n{path_a}\n\nreduce path:{np.array(reduced_path[1])}")
-        for p in path_a:
-            self.drive(p * self.map_res)
-            time.sleep(0.2)
+        if drive and self.path is not None:
+            self.is_moving = True
+            for p in self.path:
+                
+                self.drive(p, grid=True, display=True)
+                time.sleep(0.01)
+            self.path = None
+            self.is_moving = False
+        
 
         # if reduced_path[0] is False:
         #     path = astar(self.grid_map, )
@@ -304,4 +333,3 @@ class AgentRobot:
         
 
         
-

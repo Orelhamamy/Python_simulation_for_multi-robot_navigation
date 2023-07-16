@@ -1,6 +1,7 @@
 from PIL import Image
 import numpy as np
 import cv2
+import pyastar2d
 
 
 class BuildEnvironment:
@@ -11,9 +12,10 @@ class BuildEnvironment:
         self.grid = self.grid.astype(np.uint8)
         self.res = res
         self.clicked_point = (0, 0)
-        cv2.namedWindow("map")
+        # cv2.namedWindow("map")
         # cv2.setMouseCallback("map", self.get_location)
 
+        
     def show_env(self):
         cv2.imshow("map", self.grid * 255)
         cv2.waitKey(1)
